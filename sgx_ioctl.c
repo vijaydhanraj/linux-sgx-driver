@@ -335,7 +335,7 @@ long sgx_ioc_page_notify_accept(struct file *filep, unsigned int cmd,
 	for (; address < end; address += PAGE_SIZE) {
 		tmp_ret = remove_page(encl, address, true);
 		if (tmp_ret) {
-			sgx_dbg(encl, "sgx: remove failed, addr=0x%lx ret=%d\n",
+			sgx_err(encl, "sgx: remove failed, addr=0x%lx ret=%d\n",
 				 address, tmp_ret);
 			ret = tmp_ret;
 			continue;
@@ -377,6 +377,25 @@ long sgx_ioc_page_remove(struct file *filep, unsigned int cmd,
 	return ret;
 }
 
+static long sgx_ioc_eaug_info_base(struct file *filep, unsigned int cmd,
+                              unsigned long arg) {
+       struct sgx_eaug_base_init *eaug_initp = (struct sgx_eaug_base_init *)arg;
+       struct sgx_encl *encl;
+       int rval;
+
+       rval = sgx_get_encl(eaug_initp->encl_addr, &encl);
+       if (rval)
+               return -EINVAL;
+
+       encl->eaug_info_base = eaug_initp->eaug_info_base;
+       encl->num_threads = eaug_initp->num_threads;
+       printk(KERN_INFO "eaug info base is set: 0x%lx, num_threads: %u\n",
+                        encl->eaug_info_base, encl->num_threads);
+
+       kref_put(&encl->refcount, sgx_encl_release);
+       return 0;
+}
+
 typedef long (*sgx_ioc_t)(struct file *filep, unsigned int cmd,
 			  unsigned long arg);
 
@@ -410,6 +429,9 @@ long sgx_ioctl(struct file *filep, unsigned int cmd, unsigned long arg)
 		break;
 	case SGX_IOC_ENCLAVE_PAGE_REMOVE:
 		handler = sgx_ioc_page_remove;
+		break;
+	case SGX_IOC_EAUG_INFO_BASE:
+		handler = sgx_ioc_eaug_info_base;
 		break;
 	default:
 		return -ENOIOCTLCMD;

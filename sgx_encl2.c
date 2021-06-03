@@ -298,11 +298,15 @@ static int __modify_range(struct sgx_encl *encl,
 	int ret = 0, cnt, status = 0;
 
 	ret = isolate_range(encl, rg, &list);
-	if (ret)
+	if (ret) {
+		sgx_err(encl, "%s: isolate_range failed!\n", __func__);
 		goto out;
+	}
 
-	if (list_empty(&list))
+	if (list_empty(&list)) {
+		sgx_err(encl, "%s: list_empty failed!\n", __func__);
 		goto out;
+	}
 
 	/* EMODT / EMODPR */
 	list_for_each_entry_safe(epc_page, tmp, &list, list) {
@@ -403,8 +407,11 @@ long modify_range(struct sgx_range *rg, unsigned long flags)
 	     _rg.start_addr += SGX_NR_MOD_CHUNK_PAGES*PAGE_SIZE) {
 		_rg.nr_pages = rg->nr_pages > 0x10 ? 0x10 : rg->nr_pages;
 		ret = __modify_range(encl, &_rg, &secinfo);
-		if (ret)
+		if (ret) {
+			sgx_err(encl, "%s: __modify_range failed for start_addr = 0x%lx, nr_pgs = 0x%x\n",
+			              __func__, _rg.start_addr, _rg.nr_pages);
 			break;
+		}
 	}
 
 out:
@@ -420,19 +427,25 @@ int remove_page(struct sgx_encl *encl, unsigned long address, bool trim)
 	int ret;
 
 	ret = sgx_encl_find(encl->mm, address, &vma);
-	if (ret || encl != vma->vm_private_data)
+	if (ret || encl != vma->vm_private_data) {
+		sgx_err(encl, "%s: sgx_encl_find at address 0x%lx\n", __func__, address);
 		return -EINVAL;
+	}
 
 	encl_page = sgx_fault_page(vma, address, SGX_FAULT_RESERVE, NULL);
-	if (IS_ERR(encl_page))
+	if (IS_ERR(encl_page)) {
+		sgx_err(encl, "%s: sgx_fault_page at address 0x%lx\n", __func__, address);
 		return (PTR_ERR(encl_page) == -EBUSY) ? -EBUSY : -EINVAL;
+	}
 
 	if (trim && !(encl_page->flags & SGX_ENCL_PAGE_TRIM)) {
+		sgx_err(encl, "%s: SGX_ENCL_PAGE_TRIM flag not found 0x%x\n", __func__, encl_page->flags);
 		encl_page->flags &= ~SGX_ENCL_PAGE_RESERVED;
 		return -EINVAL;
 	}
 
 	if (!(encl_page->flags & SGX_ENCL_PAGE_ADDED)) {
+		sgx_err(encl, "%s: SGX_ENCL_PAGE_ADDED flag not found 0x%x\n", __func__, encl_page->flags);
 		encl_page->flags &= ~SGX_ENCL_PAGE_RESERVED;
 		return -EINVAL;
 	}

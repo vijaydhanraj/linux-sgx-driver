@@ -181,6 +181,8 @@ struct sgx_encl {
 	struct list_head encl_list;
 	struct mmu_notifier mmu_notifier;
 	unsigned int shadow_epoch;
+	unsigned long eaug_info_base;
+	unsigned int num_threads;
 };
 
 struct sgx_epc_bank {

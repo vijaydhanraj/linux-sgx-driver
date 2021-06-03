@@ -571,6 +571,8 @@ static struct sgx_encl *sgx_encl_alloc(struct sgx_secs *secs)
 	encl->ssaframesize = secs->ssaframesize;
 	encl->backing = backing;
 	encl->pcmd = pcmd;
+	encl->eaug_info_base = 0;
+	encl->num_threads = 0;
 
 	return encl;
 }

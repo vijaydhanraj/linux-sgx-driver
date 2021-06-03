@@ -247,7 +247,7 @@ static struct sgx_encl_page *sgx_do_fault(struct vm_area_struct *vma,
 	bool reserve = (flags & SGX_FAULT_RESERVE) != 0;
 	int rc = 0;
 	bool write = (vmf) ? (FAULT_FLAG_WRITE & vmf->flags) : false;
-
+    struct sgx_eaug_range_param* eaug_param_buf = NULL;
 	/* If process was forked, VMA is still there but vm_private_data is set
 	 * to NULL.
 	 */
@@ -256,10 +256,93 @@ static struct sgx_encl_page *sgx_do_fault(struct vm_area_struct *vma,
 
 	mutex_lock(&encl->lock);
 
-	entry = radix_tree_lookup(&encl->page_tree, addr >> PAGE_SHIFT);
-	if (vmf && !entry) {
-		entry = sgx_encl_augment(vma, addr, write);
-		goto out;
+	if (vmf && encl->eaug_info_base) {
+        int i;
+        int idx;
+        unsigned int num_threads = encl->num_threads;
+        unsigned int num_pages;
+        SGX_MEMORY_SEG type;
+        unsigned long eaug_base = encl->eaug_info_base;
+        unsigned long len;
+        unsigned long start_addr;
+
+        eaug_param_buf = kzalloc(sizeof(struct sgx_eaug_range_param) * num_threads, GFP_KERNEL);
+        if (!eaug_param_buf) {
+            printk(KERN_ERR "%s: Failed to allocated kernel memory!!\n", __func__);
+            rc = -ENOMEM;
+            goto out;
+        }
+        memset(eaug_param_buf, 0, sizeof(struct sgx_eaug_range_param) * num_threads);
+
+        len = copy_from_user(eaug_param_buf, (void*)eaug_base,
+                             sizeof(struct sgx_eaug_range_param) * num_threads);
+        if (len) {
+            printk(KERN_ERR "%s: Copy from user failed!!\n", __func__);
+            rc = -EFAULT;
+            goto out;
+        }
+
+        /*Extract per-thread info matching the faulting addr */
+        for (idx = 0; idx < num_threads; idx++) {
+            if (!eaug_param_buf[idx].fault_addr)
+                continue;
+
+            /*printk(KERN_ERR "@IDX=%d: eaug_base = 0x%lx, num_threads = %d, addr = 0x%lx, "
+                   "eaug_param_addr = 0x%lx, eaug_param_mem_seg = %d, eaug_param_num_pages = %d\n",
+                   idx, eaug_base, num_threads, addr, eaug_param_buf[idx].fault_addr,
+                   eaug_param_buf[idx].mem_seg, eaug_param_buf[idx].num_pages);*/
+
+            start_addr = (eaug_param_buf[idx].fault_addr - PAGE_SIZE * eaug_param_buf[idx].num_pages) + PAGE_SIZE;
+            if (eaug_param_buf[idx].fault_addr == addr) {
+                /* Set it to the lowest addr (inclusive) */
+                num_pages = eaug_param_buf[idx].num_pages;
+                addr = start_addr;
+                /*printk(KERN_ERR "@IDX=%d: updated addr = 0x%lx\n", idx, addr);*/
+                break;
+            } else if (addr >= start_addr && addr < eaug_param_buf[idx].fault_addr) {
+                /* part of the request was already EAUGed */
+                num_pages = ((addr - start_addr) >> PAGE_SHIFT) + 1;
+                addr = start_addr;
+                /*printk(KERN_ERR "@@IDX=%d: updated addr = 0x%lx, num_pages = %d, PAGE_SHIFT=%d\n",
+                                 idx, addr, num_pages, PAGE_SHIFT);*/
+                break;
+            }
+        }
+
+        /* reached end of the thread, still couldn't find faulting address */
+        if (idx == num_threads) {
+            printk(KERN_ERR "%s: Reached end but couldn't find faulting address 0x%lx\n", __func__,
+                             addr);
+            rc = -EFAULT;
+            goto out;
+        }
+
+        type = eaug_param_buf[idx].mem_seg;
+        if (type == HEAP || type == STACK) {
+            int sign = (type == HEAP) ? 1 : -1;
+            for (i = 0; i < num_pages; i++) {
+                entry = radix_tree_lookup(&encl->page_tree, (addr >> PAGE_SHIFT) + i * sign);
+                /* page already in enclave */
+                if (entry)
+                    break;
+
+                entry = sgx_encl_augment(vma, addr + i * sign * PAGE_SIZE, write);
+                if (!entry) {
+                    printk(KERN_ERR "eaug failed at %p\n", (void *)addr + i * sign * PAGE_SIZE);
+                    rc = -EFAULT;
+                    goto out;
+                }
+            }
+        } else {
+            rc = -EFAULT;
+            goto out;
+        }
+	} else {
+		entry = radix_tree_lookup(&encl->page_tree, addr >> PAGE_SHIFT);
+		if (vmf && !entry) {
+			entry = sgx_encl_augment(vma, addr, write);
+			goto out;
+		}
 	}
 
 	/* No entry found can not happen in 'reloading an evicted page'
@@ -357,7 +440,9 @@ static struct sgx_encl_page *sgx_do_fault(struct vm_area_struct *vma,
 	rc = 0;
 	sgx_test_and_clear_young(entry, encl);
 out:
-	mutex_unlock(&encl->lock);
+    if (eaug_param_buf)
+        kfree(eaug_param_buf);
+    mutex_unlock(&encl->lock);
 	if (epc_page)
 		sgx_free_page(epc_page, encl);
 	if (secs_epc_page)
